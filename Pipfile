@@ -1,0 +1,20 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[dev-packages]
+pylint = "*"
+rope = "*"
+jupyter = "*"
+autopep8 = "*"
+
+[packages]
+torch = "*"
+torchvision = "*"
+pyltp = "*"
+thulac = "*"
+gensim = "*"
+
+[requires]
+python_version = "3.6"
