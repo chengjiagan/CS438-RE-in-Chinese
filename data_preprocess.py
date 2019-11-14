@@ -5,9 +5,10 @@ import re
 import numpy as np
 import pyltp
 import thulac
+import torch
 from gensim.models.keyedvectors import KeyedVectors
+from torch.nn.utils.rnn import pack_sequence
 
-config = {}
 corups_file = ['data/LabeledData.{}.txt'.format(i) for i in range(1, 6)]
 embedding_file = 'model/merge_sgns_bigram_char300.txt'
 save = 'data/train_data.pkl'
@@ -68,12 +69,11 @@ def segment(sent):
 
 
 # process samples from dataset
-words_samples = []
+words_samples = [] # for debug
 embedding_samples = []
 postag_samples = []
 position1_samples = []
 position2_samples = []
-nes = []
 labels = []
 max_length = 120
 for filename in corups_file:
@@ -102,10 +102,11 @@ for filename in corups_file:
             # and some marked entity may not appear in the sentence
             for sent in sents:
                 words, postags = segment(sent)
-                l = max_length - len(words)
-                embeddings = [embedding(w) for w in words]
-                embeddings.extend([unknown] * l)
-                postags.extend([pos2id['x']] * l)
+                # l = max_length - len(words)
+                embeddings = torch.tensor([embedding(w) for w in words])
+                postags = torch.tensor(postags)
+                # embeddings.extend([unknown] * l)
+                # postags.extend([pos2id['x']] * l)
                 for ne1 in relation[0].split(','):
                     if ne1 not in words:
                         continue
@@ -116,21 +117,31 @@ for filename in corups_file:
                         embedding_samples.append(embeddings)
                         postag_samples.append(postags)
                         labels.append(relation2id[relation[2]])
+
                         i1 = words.index(ne1)
                         i2 = words.index(ne2)
-                        position1_samples.append(list(range(-i1, max_length - i1)))
-                        position2_samples.append(list(range(-i2, max_length - i2)))
-embedding_samples = np.asarray(embedding_samples)
-postag_samples = np.asarray(postag_samples)
-position1_samples = np.asarray(position1_samples)
-position2_samples = np.asarray(position2_samples)
+                        positions1 = torch.abs(torch.tensor(range(-i1, len(words) - i1)))
+                        positions2 = torch.abs(torch.tensor(range(-i2, len(words) - i2)))
+                        position1_samples.append(positions1)
+                        position2_samples.append(positions2)
+                        # position1_samples.append(list(range(-i1, max_length - i1)))
+                        # position2_samples.append(list(range(-i2, max_length - i2)))
+
+embedding_samples = pack_sequence(embedding_samples)
+postag_samples    = pack_sequence(postag_samples)
+position1_samples = pack_sequence(position1_samples)
+position2_samples = pack_sequence(position2_samples)
+# embedding_samples = np.asarray(embedding_samples)
+# postag_samples = np.asarray(postag_samples)
+# position1_samples = np.asarray(position1_samples)
+# position2_samples = np.asarray(position2_samples)
 labels = np.asarray(labels)
 
 # save
+config = {}
 config['EMBEDDING_LENTH'] = word2vec.vector_size
 config['RELATION_LENGTH'] = len(id2relation)
 config['POS_LENGTH'] = len(id2pos)
-config['SENTENCE_LENGTH'] = max_length
 config['NUM_INSTANCE'] = len(embedding_samples)
 print('saving...')
 with open(save, "wb") as f:
