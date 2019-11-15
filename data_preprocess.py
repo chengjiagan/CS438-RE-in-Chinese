@@ -6,11 +6,10 @@ import numpy as np
 import pyltp
 import thulac
 import torch
-from gensim.models.keyedvectors import KeyedVectors
 from torch.nn.utils.rnn import pack_sequence
 
 corups_file = ['data/LabeledData.{}.txt'.format(i) for i in range(1, 6)]
-embedding_file = 'model/merge_sgns_bigram_char300.txt'
+word2vec_file = 'model/word2vec.pkl'
 save = 'data/train_data.pkl'
 
 # one-hot embedding of POS tag
@@ -31,7 +30,9 @@ for i, r in enumerate(id2relation):
 
 # get the word2vec embedding of a word
 print('loading pretrained word2vec model...')
-word2vec = KeyedVectors.load_word2vec_format(embedding_file, binary=False)
+# word2vec = KeyedVectors.load_word2vec_format(embedding_file, binary=False)
+with open(word2vec_file, 'rb') as f:
+    word2vec = pickle.load(f)
 print('finish loading')
 unknown = np.ones(word2vec.vector_size, dtype=np.float32)
 def embedding(word):
@@ -126,23 +127,26 @@ for filename in corups_file:
                         position2_samples.append(positions2)
                         # position1_samples.append(list(range(-i1, max_length - i1)))
                         # position2_samples.append(list(range(-i2, max_length - i2)))
+num_instance = len(embedding_samples)
+print('total', len(embedding_samples), 'instances')
 
-embedding_samples = pack_sequence(embedding_samples)
-postag_samples    = pack_sequence(postag_samples)
-position1_samples = pack_sequence(position1_samples)
-position2_samples = pack_sequence(position2_samples)
+
+embedding_samples = pack_sequence(embedding_samples, enforce_sorted=False)
+postag_samples    = pack_sequence(postag_samples, enforce_sorted=False)
+position1_samples = pack_sequence(position1_samples, enforce_sorted=False)
+position2_samples = pack_sequence(position2_samples, enforce_sorted=False)
 # embedding_samples = np.asarray(embedding_samples)
 # postag_samples = np.asarray(postag_samples)
 # position1_samples = np.asarray(position1_samples)
 # position2_samples = np.asarray(position2_samples)
-labels = np.asarray(labels)
+labels = torch.tensor(labels)
 
 # save
 config = {}
-config['EMBEDDING_LENTH'] = word2vec.vector_size
+config['EMBEDDING_LENGTH'] = word2vec.vector_size
 config['RELATION_LENGTH'] = len(id2relation)
 config['POS_LENGTH'] = len(id2pos)
-config['NUM_INSTANCE'] = len(embedding_samples)
+config['NUM_INSTANCE'] = num_instance
 print('saving...')
 with open(save, "wb") as f:
     pickle.dump(config, f)
