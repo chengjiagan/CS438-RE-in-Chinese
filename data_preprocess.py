@@ -23,12 +23,6 @@ pos2id = {}
 for i, p in enumerate(id2pos):
     pos2id[p] = i
 
-# four types of relations
-# id2relation = ['I', 'B', 'E', 'P']
-# relation2id = {}
-# for i, r in enumerate(id2relation):
-#     relation2id[r] = i
-
 # get the word2vec embedding of a word
 print('loading pretrained word2vec model...')
 with open(word2vec_file, 'rb') as f:

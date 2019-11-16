@@ -14,7 +14,6 @@ model_file = 'model/model.pkl'
 
 with open(train_data_file, 'rb') as f:
     config = pickle.load(f)
-    id2relation = pickle.load(f)
     embeddings = pickle.load(f)
     postags = pickle.load(f)
     positions1 = pickle.load(f)
