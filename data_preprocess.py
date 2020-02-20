@@ -1,19 +1,19 @@
 # coding: utf-8
 import pickle
-import re
-
+import json
 import numpy as np
 import pyltp
-import thulac
 import torch
-from torch.nn.utils.rnn import pack_sequence
+from torch.nn.utils.rnn import pad_sequence
+from gensim import corpora
 
-corups_file = ['data/LabeledData.{}.txt'.format(i) for i in range(1, 6)]
-word2vec_file = 'model/word2vec.pkl'
+corups_file = 'data/corups.txt'
+word2vec_file = 'model/word2vec.wv'
+dict_file = 'data/dictionary.dict'
 cws_model = 'model/cws.model'
 pos_model = 'model/pos.model'
 ner_model = 'model/ner.model'
-save = 'data/train_data.pkl'
+save = 'data/train_data_small.pkl'
 
 # one-hot embedding of POS tag
 id2pos = ['a', 'b', 'c', 'd', 'e', 'g', 'h', 'i', 'j', 'k', 'm',
@@ -23,23 +23,8 @@ pos2id = {}
 for i, p in enumerate(id2pos):
     pos2id[p] = i
 
-# get the word2vec embedding of a word
-print('loading pretrained word2vec model...')
-with open(word2vec_file, 'rb') as f:
-    word2vec = pickle.load(f)
-print('finish loading')
-unknown = np.ones(word2vec.vector_size, dtype=np.float32)
-def embedding(word):
-    if word in word2vec:
-        return word2vec[word]
-    else:
-        em = np.zeros(word2vec.vector_size, dtype=np.float32)
-        for c in word:
-            if c in word2vec:
-                em = em + word2vec[c]
-            else:
-                em = em + unknown
-        return em
+# load the dictionary
+dictionary = corpora.Dictionary.load(dict_file)
 
 # segment words in the sentence with the help of given named entity
 segmentor = pyltp.Segmentor()
@@ -56,15 +41,15 @@ def segment(sent):
     netags = recognizer.recognize(segments, postags)
     ne = []
     for w, p, n in zip(segments, postags, netags):
-        if n[0] == '0':
+        if n[0] == 'O':
             words.append(w)
-            pos.append(pos2id[p])
+            pos.append(p)
         elif n[0] == 'S':
             words.append(w)
-            pos.append(pos2id[n[-2:].lower()])
+            pos.append(n[-2:].lower())
         elif n[0] == 'B':
             ne = [w]
-            pos.append(pos2id[n[-2:].lower()])
+            pos.append(n[-2:].lower())
         elif n[0] == 'I':
             ne.append(w)
         elif n[0] == 'E':
@@ -73,103 +58,79 @@ def segment(sent):
     return (words, pos)
 
 # process samples from dataset
-words_samples = []  # for debug
-embedding_samples = []
+# words_samples = []  # for debug
+idx_samples = []
 postag_samples = []
 position1_samples = []
 position2_samples = []
-labels = []
-max_length = 120
+length_samples = []
+label_samples = []
+max_length = 250
 num_pos = 0
 num_neg = 0
-for filename in corups_file:
-    print('processing "{}"'.format(filename))
 
-    with open(filename, encoding='utf-8') as f:
-        new_sample = True
-        sents = []
-        for line in f.readlines():
-            line = line.strip()
 
-            # end of the sample
-            if line == '':
-                new_sample = True
-                continue
+with open(corups_file, encoding='utf-8') as f:
+    for line in f:
+        json_obj = json.loads(line)
+        words, pos = segment(json_obj['text'])
+        length = len(words)
+        if length > max_length:
+            continue
+        words_idx = torch.tensor(dictionary.doc2idx(words)) + 1 # 1 is the offset
+        pos_ids = torch.tensor([pos2id[p] for p in pos])
 
-            # new sample
-            if new_sample:
-                line = re.sub(r'{([^}]*)/n.}', lambda x: x.group(1), line)
-                sents = pyltp.SentenceSplitter.split(line)
-                new_sample = False
-                continue
+        for nh, ni, l in zip(json_obj['person'], json_obj['org'], json_obj['label']):
+            nh_index = words.index(nh)
+            ni_index = words.index(ni)
+            nh_position = list(range(-nh_index, length - nh_index))
+            ni_position = list(range(-ni_index, length - ni_index))
+            nh_position = torch.tensor(nh_position)
+            ni_position = torch.tensor(ni_position)
 
-            # relation labels
-            relation = line.split('|')
-            # some entity may have several names
-            # and some marked entity may not appear in the sentence
-            for sent in sents:
-                words, postags = segment(sent)
-                ne1s = relation[0].split(',')
-                ne2s = relation[1].split(',')
-                for ne1 in ne1s:
-                    if ne1 in words:
-                        postags[words.index(ne1)] = pos2id['nh']
-                for ne2 in ne2s:
-                    if ne2 in words:
-                        postags[words.index(ne2)] = pos2id['ni']
-                nhs = []
-                nis = []
-                for i, (w, p) in enumerate(zip(words, postags)):
-                    if p == pos2id['nh']:
-                        nhs.append((i, w))
-                    elif p == pos2id['ni']:
-                        nis.append((i, w))
+            # words_samples.append(words)
+            idx_samples.append(words_idx)
+            postag_samples.append(pos_ids)
+            position1_samples.append(nh_position)
+            position2_samples.append(ni_position)
+            length_samples.append(length)
+            if l:
+                num_pos += 1
+                label_samples.append(1)
+            else:
+                num_neg += 1
+                label_samples.append(0)
 
-                embeddings = torch.tensor([embedding(w) for w in words])
-                postags = torch.tensor(postags)
-                for i1, nh in nhs:
-                    for i2, ni in nis:
-                        positions1 = torch.abs(
-                            torch.tensor(range(-i1, len(words) - i1)))
-                        positions2 = torch.abs(
-                            torch.tensor(range(-i2, len(words) - i2)))
-                        if nh in ne1s and ni in ne2s:
-                            words_samples.append(words)
-                            embedding_samples.append(embeddings)
-                            postag_samples.append(postags)
-                            position1_samples.append(positions1)
-                            position2_samples.append(positions2)
-                            labels.append(1)
-                            num_pos = num_pos + 1
-                        elif num_pos > num_neg:
-                            words_samples.append(words)
-                            embedding_samples.append(embeddings)
-                            postag_samples.append(postags)
-                            position1_samples.append(positions1)
-                            position2_samples.append(positions2)
-                            labels.append(0)
-                            num_neg = num_neg + 1
 print('positive instances:', num_pos)
 print('negative instances:', num_neg)
 
-# pack the variable length sequence using pytorch's pack_sequence
-embedding_samples = pack_sequence(embedding_samples, enforce_sorted=False)
-postag_samples = pack_sequence(postag_samples, enforce_sorted=False)
-position1_samples = pack_sequence(position1_samples, enforce_sorted=False)
-position2_samples = pack_sequence(position2_samples, enforce_sorted=False)
-labels = torch.tensor(labels)
+# shuffle the samples
+pack_samples = list(zip(idx_samples, postag_samples, position1_samples, position2_samples, label_samples, length_samples))
+np.random.shuffle(pack_samples)
+idx_samples, postag_samples, position1_samples, position2_samples, label_samples, length_samples = zip(*pack_samples)
+
+# pad the sequence using pytorch's helper function torch.nn.utils.rnn.pad_sequence()
+idx_samples = pad_sequence(idx_samples, batch_first=True)
+postag_samples = pad_sequence(postag_samples, batch_first=True)
+position1_samples = pad_sequence(position1_samples, batch_first=True)
+position2_samples = pad_sequence(position2_samples, batch_first=True)
+length_samples = torch.tensor(length_samples)
+label_samples = torch.tensor(label_samples)
 
 # save
 config = {}
-config['EMBEDDING_LENGTH'] = word2vec.vector_size
-config['RELATION_LENGTH'] = 2 # len(id2relation)
+config['RELATION_LENGTH'] = 2  # len(id2relation)
 config['POS_LENGTH'] = len(id2pos)
 config['NUM_INSTANCE'] = num_pos + num_neg
+config['NUM_POS_INSTANCE'] = num_pos
+config['NUM_NEG_INSTANCE'] = num_neg
+config['MAX_LENGTH'] = max_length
 print('saving...')
 with open(save, "wb") as f:
     pickle.dump(config, f)
-    pickle.dump(embedding_samples, f)
+    pickle.dump(idx_samples, f)
     pickle.dump(postag_samples, f)
     pickle.dump(position1_samples, f)
     pickle.dump(position2_samples, f)
-    pickle.dump(labels, f)
+    pickle.dump(label_samples, f)
+    pickle.dump(length_samples, f)

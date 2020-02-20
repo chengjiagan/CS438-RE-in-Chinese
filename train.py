@@ -1,80 +1,68 @@
 # coding: utf-8
 import pickle
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as D
-import torch.nn.utils.rnn as rnn
 import matplotlib.pyplot as plt
 from BiLSTM_ATT import BiLSTM_ATT
 
-train_data_file = 'data/train_data.pkl'
+train_data_file = 'data/train_data_small.pkl'
+wordvec_file = 'model/embedding.npy'
 model_file = 'model/model.pkl'
 
 with open(train_data_file, 'rb') as f:
     config = pickle.load(f)
-    embeddings = pickle.load(f)
-    postags = pickle.load(f)
-    positions1 = pickle.load(f)
-    positions2 = pickle.load(f)
-    targets = pickle.load(f)
+    idx_samples = pickle.load(f)
+    postag_samples = pickle.load(f)
+    position1_samples = pickle.load(f)
+    position2_samples = pickle.load(f)
+    label_samples = pickle.load(f)
+    length_samples = pickle.load(f)
 
-num_instance = config['NUM_INSTANCE']
-batch_size = 64
-sent_len = 120
-embeddings, lengths = rnn.pad_packed_sequence(
-    embeddings, batch_first=True, total_length=sent_len)
-postags, _ = rnn.pad_packed_sequence(
-    postags, batch_first=True, total_length=sent_len)
-positions1, _ = rnn.pad_packed_sequence(
-    positions1, batch_first=True, total_length=sent_len)
-positions2, _ = rnn.pad_packed_sequence(
-    positions2, batch_first=True, total_length=sent_len)
+num = config['NUM_INSTANCE']
+train_num = int(num * 0.8)
+validate_num = int(num * 0.2)
 
-train_num = int(num_instance * 0.6)
-validate_num = int(num_instance * 0.2)
-test_num = num_instance - train_num - validate_num
+train = idx_samples[:train_num]
+postag_t = postag_samples[:train_num]
+positions1_t = position1_samples[:train_num]
+positions2_t = position2_samples[:train_num]
+label_t = label_samples[:train_num]
+lengths_t = length_samples[:train_num]
+dataset = D.TensorDataset(train, postag_t, positions1_t,
+                          positions2_t, label_t, lengths_t)
 
-validate = embeddings[train_num:train_num + validate_num]
-postags_v = postags[train_num:train_num + validate_num]
-positions1_v = positions1[train_num:train_num + validate_num]
-positions2_v = positions2[train_num:train_num + validate_num]
-targets_v = targets[train_num:train_num + validate_num]
-lengths_v = lengths[train_num:train_num + validate_num]
+validate = idx_samples[train_num:]
+postags_v = postag_samples[train_num:]
+positions1_v = position1_samples[train_num:]
+positions2_v = position2_samples[train_num:]
+label_v = label_samples[train_num:]
+lengths_v = length_samples[train_num:]
 
-test = embeddings[train_num + validate_num:]
-postags_t = postags[train_num + validate_num:]
-positions1_t = positions1[train_num + validate_num:]
-positions2_t = positions2[train_num + validate_num:]
-targets_t = targets[train_num + validate_num:]
-lengths_t = lengths[train_num + validate_num:]
+print('train set size:', train.size(0))
+print('validate set size:', validate.size(0))
 
-train = embeddings[:train_num]
-postags = postags[:train_num]
-positions1 = positions1[:train_num]
-positions2 = positions2[:train_num]
-targets = targets[:train_num]
-lengths = lengths[:train_num]
-dataset = D.TensorDataset(train, postags, positions1,
-                          positions2, targets, lengths)
-dataloader = D.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+def get_metric(y_t, targets_t):
+    prec = torch.mul(y_t.max(dim=1)[1], targets_t).sum().item() / y_t.max(dim=1)[1].sum().item()
+    recall = torch.mul(y_t.max(dim=1)[1], targets_t).sum().item() / targets_t.sum().item()
+    f1 = 2 * prec * recall / (prec + recall)
+    return prec, recall, f1
 
-print('train set size:', train_num)
-print('validate set size:', validate_num)
-print('test set size:', test_num)
-
-def train_model(model, learning_rate, epoch_num):
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate,    weight_decay=1e-5)
+def train_model(model, dataloader, epoch_num):
+    optimizer = optim.Adam(model.parameters(), weight_decay=1e-5)
     criterion = nn.CrossEntropyLoss()
 
     train_loss = []
     validate_loss = []
+    validate_metric = []
     for epoch in range(epoch_num):
-        print('epoch=', epoch)
+        if epoch % 10 == 0:
+            print('epoch:', epoch)
 
         # train
+        model.train()
         for sent, postag, pos1, pos2, target, length in dataloader:
             y = model(sent, postag, pos1, pos2, length)
             loss = criterion(y, target)
@@ -85,12 +73,14 @@ def train_model(model, learning_rate, epoch_num):
         train_loss.append(loss.item())
 
         # validation
+        model.eval()
         y_v = model(validate, postags_v, positions1_v, positions2_v, lengths_v)
-        loss_v = criterion(y_v, targets_v)
+        loss_v = criterion(y_v, label_v)
         validate_loss.append(loss_v.item())
+        validate_metric.append(get_metric(y_v, label_v))
     print('finished')
-    
-    return train_loss, validate_loss
+
+    return train_loss, validate_loss, validate_metric
 
 
 def ave(inp):
@@ -98,6 +88,7 @@ def ave(inp):
     for i in range(1, len(inp) + 1):
         out.append(np.average(inp[:i]))
     return out
+
 
 def loss_graphic(train_loss, validate_loss, title):
     plt.plot(train_loss, 'r-', label='train')
@@ -108,32 +99,44 @@ def loss_graphic(train_loss, validate_loss, title):
     plt.title(title)
     plt.show()
 
+def metric_graphic(valid_metric, title):
+    acc, rec, f1 = zip(*valid_metric)
+    plt.plot(acc, 'r-', label='accuracy')
+    plt.plot(rec, 'b-', label='recall')
+    plt.plot(f1, 'g-', labels='f1')
+    plt.xlabel('epochs')
+    plt.ylabel('metric')
+    plt.legend()
+    plt.title(title)
+    plt.show()
 
-def test_model(model, test, postags_t, posi1_t, posi2_t, lengths_t, targets_t):
-    y_t = model(test, postags_t, posi1_t, posi2_t, lengths_t)
-    acc = (y_t.max(dim=1)[1] == targets_t).sum().item() / test_num
-    recall = torch.mul(y_t.max(dim=1)[1], targets_t).sum(
-    ).item() / targets_t.sum().item()
-    return (acc, recall)
+epoch_num = 150
+batch_size = 256
 
 model_config = {}
-model_config['SENTENCE_SIZE'] = sent_len
-model_config['EMBED_SIZE'] = config['EMBEDDING_LENGTH']
+wordvec = np.load(wordvec_file)
+model_config['EMBED_SIZE'] = wordvec.shape[1]
 model_config['RELATION_SIZE'] = config['RELATION_LENGTH']
 model_config['POSTAG_SIZE'] = config['POS_LENGTH']
 model_config['POSTAG_DIM'] = 20
-model_config['POSITION_SIZE'] = 120
+model_config['POSITION_SIZE'] = config['MAX_LENGTH']
 model_config['POSITION_DIM'] = 50
 model_config['HIDDEN_DIM'] = 200
+model_config['PRETRAINED_WORDVEC'] = torch.tensor(wordvec, dtype=torch.float)
 model = BiLSTM_ATT(model_config)
 
-train_loss, valid_loss = train_model(model, 0.005, 150)
-loss_graphic(ave(train_loss), ave(valid_loss), 'epoch=150 hidden=200')
-print(valid_loss[-1])
-
-acc, recall = test_model(model, test, postags_t, positions1_t, positions2_t, lengths_t, targets_t)
+dataloader = D.DataLoader(dataset, batch_size=batch_size,
+                          shuffle=False, num_workers=2, drop_last=True)
+train_loss, valid_loss, valid_metric = train_model(model, dataloader, epoch_num)
+loss_graphic(ave(train_loss), ave(valid_loss),
+             'epoch=%d hidden=%d batch=%d' % (epoch_num, model_config['HIDDEN_DIM'], batch_size))
+metric_graphic(valid_metric,
+             'epoch=%d hidden=%d batch=%d' % (epoch_num, model_config['HIDDEN_DIM'], batch_size))
+acc, recall, f1 = get_metric(model, validate, postags_v,
+                         positions1_v, positions2_v, lengths_v, label_v)
 print('accuracy:', acc)
 print('recall:', recall)
+print('f1:', f1)
 
 # save
 print('saving model...')
